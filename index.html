@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Melanoma template-space explorer</title>
+<style>
+  :root { --ink:#1d2330; --muted:#667085; --line:#e4e7ec; --bg:#fafbfc; --accent:#2f5bea; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+               color:var(--ink); background:#fff; font-size:14px; }
+  #app { display:flex; height:100vh; }
+  #side { width:330px; min-width:330px; border-right:1px solid var(--line); background:var(--bg);
+          padding:18px 18px 24px; overflow-y:auto; }
+  h1 { font-size:17px; margin:0 0 4px; line-height:1.25; }
+  .sub { color:var(--muted); font-size:12.5px; line-height:1.45; margin:0 0 14px; }
+  .group { border-top:1px solid var(--line); padding:12px 0 4px; }
+  .group > label.h { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+                     color:var(--muted); margin-bottom:6px; font-weight:600; }
+  select, input[type=text] { width:100%; padding:7px 8px; border:1px solid #cfd4dc; border-radius:7px;
+                             background:#fff; font-size:13.5px; color:var(--ink); }
+  .row { display:flex; gap:6px; align-items:center; }
+  .row > * { flex:1; }
+  button { padding:6px 8px; border:1px solid #cfd4dc; background:#fff; border-radius:7px; cursor:pointer;
+           font-size:13px; color:var(--ink); }
+  button:hover { border-color:var(--accent); }
+  .radio, .check { display:flex; align-items:center; gap:7px; margin:5px 0; cursor:pointer; }
+  .radio input, .check input { margin:0; }
+  .stats { display:grid; grid-template-columns: auto 1fr; gap:3px 10px; font-size:13px; margin-top:4px; }
+  .stats div:nth-child(odd) { color:var(--muted); }
+  .note { color:var(--muted); font-size:11.5px; line-height:1.4; margin-top:8px; }
+  #main { flex:1; position:relative; overflow:hidden; }
+  canvas#plot { position:absolute; inset:0; width:100%; height:100%; cursor:crosshair; }
+  #legend { position:absolute; right:16px; bottom:16px; background:rgba(255,255,255,.94); border:1px solid var(--line);
+            border-radius:9px; padding:9px 11px; font-size:12px; min-width:210px; }
+  #legend canvas { display:block; width:190px; height:12px; border-radius:3px; margin:5px 0 2px; }
+  #legend .ends { display:flex; justify-content:space-between; color:var(--muted); font-size:11px; }
+  #legend .ov { margin-top:7px; display:none; gap:12px; font-size:11.5px; }
+  .ring { display:inline-block; width:11px; height:11px; border-radius:50%; vertical-align:-2px; margin-right:4px; }
+  #tip { position:absolute; pointer-events:none; background:#fff; border:1px solid #cfd4dc; border-radius:9px;
+         box-shadow:0 6px 20px rgba(16,24,40,.14); padding:9px 10px; font-size:12.5px; display:none;
+         max-width:260px; line-height:1.45; z-index:5; }
+  #tip img { display:block; width:112px; height:112px; object-fit:cover; border-radius:6px; margin-bottom:6px; }
+  #tip b { font-weight:600; }
+  #hint { position:absolute; left:14px; bottom:12px; color:var(--muted); font-size:11.5px; }
+  #strip { position:absolute; left:0; right:0; bottom:0; height:178px; background:rgba(255,255,255,.97);
+           border-top:1px solid var(--line); display:none; flex-direction:column; z-index:4; }
+  #stripHead { display:flex; justify-content:space-between; align-items:center; padding:6px 12px 2px;
+               font-size:12px; color:var(--muted); }
+  #stripBody { flex:1; display:flex; gap:8px; overflow-x:auto; padding:4px 12px 10px; align-items:flex-start; }
+  .card { flex:0 0 auto; width:104px; font-size:11px; text-align:center; cursor:pointer; color:var(--ink); }
+  .card img, .card .ph { width:96px; height:96px; object-fit:cover; border-radius:6px; border:3px solid #ccc; display:block; margin:0 auto 3px; }
+  .card .ph { background:#f2f4f7; }
+  .card:hover img { outline:2px solid var(--accent); }
+  #loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="side">
+    <h1>How readers differ in judging melanoma</h1>
+    <p class="sub">Each dot is one lesion image, positioned by its scores on the first
+      <span id="kTxt">9</span> axes along which readers' feature reliance differs: either a t-SNE map of all
+      of them (images close together are treated alike by readers' individual differences) or any two axes
+      directly. Pick a reader to see the probability that they would call each image melanoma.</p>
+
+    <div class="group">
+      <label class="h" for="reader">Reader (or none, to see the images alone)</label>
+      <select id="reader"></select>
+      <div class="row" style="margin-top:6px">
+        <button id="prev">◀ Prev</button><button id="rand">Random</button><button id="next">Next ▶</button>
+      </div>
+      <div class="note">Readers are ordered by their position on axis 1 (the main dimension of individual differences).</div>
+    </div>
+
+    <div class="group">
+      <label class="h">Arrange images by</label>
+      <label class="radio"><input type="radio" name="layout" value="tsne" checked> t-SNE map (all axes)</label>
+      <label class="radio"><input type="radio" name="layout" value="axes"> Two axes:
+        <select id="axX" style="width:56px;padding:3px 4px"></select> across,
+        <select id="axY" style="width:56px;padding:3px 4px"></select> up</label>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="showReaders"> Show readers on these axes, colored by
+        <select id="readerMetric" style="width:auto;padding:3px 4px">
+          <option value="dprime">d′</option><option value="criterion">criterion</option>
+          <option value="hit_rate">hit rate</option><option value="fa_rate">false-alarm rate</option></select></label>
+      <div class="note">Diamonds are readers, placed by their own positions on the two axes (on their own scale; readers'
+        coordinates are smaller than image scores). Hover for details; click to select that reader.</div>
+    </div>
+
+    <div class="group">
+      <label class="h">Image strip along an axis</label>
+      <div class="row">
+        <select id="stripAxis" style="flex:0 0 74px"></select>
+        <select id="stripMode"><option value="ends">12 at each end</option><option value="spread">24 evenly spaced</option></select>
+      </div>
+      <div class="row" style="margin-top:6px"><button id="stripBtn">Show strip</button></div>
+      <div class="note">Lines lesions up from the − end to the + end of the axis. Click an image to find it on the map.</div>
+    </div>
+
+    <div class="group">
+      <label class="h">Color images by</label>
+      <label class="radio"><input type="radio" name="mode" value="pred"> Predicted P(says melanoma)</label>
+      <label class="radio"><input type="radio" name="mode" value="diff"> Difference from the average reader</label>
+      <label class="radio"><input type="radio" name="mode" value="gt" checked> True diagnosis</label>
+      <label class="radio"><input type="radio" name="mode" value="cons"> Consensus (share of readers saying melanoma)</label>
+      <label class="radio"><input type="radio" name="mode" value="axis"> Image score on axis
+        <select id="axisSel" style="width:62px;padding:3px 4px;margin-left:2px"></select></label>
+    </div>
+
+    <div class="group">
+      <label class="h">Actual responses</label>
+      <label class="check"><input type="checkbox" id="overlay"> Overlay this reader's actual answers</label>
+      <label class="check"><input type="checkbox" id="onlySeen"> Show only images this reader judged</label>
+    </div>
+
+    <div class="group">
+      <label class="h" for="find">Find an image</label>
+      <div class="row"><input type="text" id="find" placeholder="e.g. ISIC_0028048"><button id="findBtn" style="flex:0 0 auto">Go</button></div>
+      <label class="h" style="margin-top:10px" for="size">Dot size</label>
+      <input type="range" id="size" min="1" max="6" step="0.25" value="2.25" style="width:100%">
+    </div>
+
+    <div class="group">
+      <label class="h" id="statsHead">This reader</label>
+      <div class="stats" id="stats"></div>
+      <div class="note" id="modelNote"></div>
+    </div>
+    <div class="note" style="border-top:1px solid var(--line);padding-top:10px;margin-top:14px">
+      Lesion images: ISIC Archive. Reader labels are anonymized.</div>
+  </aside>
+
+  <main id="main">
+    <canvas id="plot"></canvas>
+    <div id="legend">
+      <div id="legTitle"></div>
+      <canvas id="legBar" width="380" height="24"></canvas>
+      <div class="ends"><span id="legLo"></span><span id="legHi"></span></div>
+      <div id="legR" style="display:none;margin-top:9px">
+        <div id="legRTitle"></div><canvas id="legRBar" width="380" height="24"></canvas>
+        <div class="ends"><span id="legRLo"></span><span id="legRHi"></span></div></div>
+      <div class="ov" id="legOv"><span><span class="ring" style="border:2.5px solid #d7191c"></span>said melanoma</span>
+        <span><span class="ring" style="border:2.5px solid #1f5fd6"></span>said nevus</span></div>
+    </div>
+    <div id="tip"></div>
+    <div id="strip"><div id="stripHead"><span id="stripTitle"></span><button id="stripClose" style="padding:2px 8px">✕</button></div>
+      <div id="stripBody"></div></div>
+    <div id="hint">Scroll to zoom · drag to pan · double-click to reset · hover for details</div>
+    <div id="loading">Loading data…</div>
+  </main>
+</div>
+
+<script>
+(async function () {
+  // ---------- colour maps ----------
+  const VIRIDIS = [[68,1,84],[72,40,120],[62,74,137],[49,104,142],[38,130,142],[31,158,137],[53,183,121],[109,205,89],[180,222,44],[253,231,37]];
+  const RDBU = [[5,48,97],[33,102,172],[67,147,195],[146,197,222],[209,229,240],[247,247,247],[253,219,199],[244,165,130],[214,96,77],[178,24,43],[103,0,31]];
+  function lut(stops) {
+    const out = [];
+    for (let i = 0; i < 256; i++) {
+      const t = i / 255 * (stops.length - 1), k = Math.min(Math.floor(t), stops.length - 2), f = t - k;
+      out.push(stops[k].map((v, j) => Math.round(v + (stops[k + 1][j] - v) * f)));
+    }
+    return out.map(c => `rgb(${c[0]},${c[1]},${c[2]})`);
+  }
+  const BGR = [[33,102,172],[103,169,207],[209,229,240],[224,224,224],[253,219,199],[239,138,98],[178,24,43]];
+  const VIR = lut(BGR), DIV = lut(RDBU), SEQ = lut(VIRIDIS);   // VIR: probability scale, blue (nevus) -> grey -> red (melanoma)
+  const C_NEV = "#2166ac", C_MEL = "#b2182b";
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+
+  // ---------- data ----------
+  const [meta, predBuf, respBuf] = await Promise.all([
+    fetch("data/meta.json").then(r => r.json()),
+    fetch("data/predictions.bin").then(r => r.arrayBuffer()),
+    fetch("data/responses.bin").then(r => r.arrayBuffer())]);
+  const pred = new Uint8Array(predBuf), resp = new Uint8Array(respBuf);
+  const NI = meta.n_images, NR = meta.n_readers, IM = meta.images, RD = meta.readers;
+  const meanPred = new Float32Array(NI);
+  for (let r = 0; r < NR; r++) for (let i = 0; i < NI; i++) meanPred[i] += pred[r * NI + i] / 255 / NR;
+  const axisScale = [];
+  for (let k = 0; k < meta.K; k++) {
+    const a = IM.axes.map(v => Math.abs(v[k])).sort((x, y) => x - y);
+    axisScale.push(a[Math.floor(a.length * 0.98)] || 1);
+  }
+  document.getElementById("loading").remove();
+  document.getElementById("kTxt").textContent = meta.K;
+
+  // ---------- UI ----------
+  const $ = id => document.getElementById(id);
+  const S = { layout: "tsne", axX: 0, axY: 1, showReaders: false, rMetric: "dprime", hoverReader: -1, reader: -1, mode: "gt", axis: 0, overlay: false, onlySeen: false, size: 2.25,
+              zoom: 1, panX: 0, panY: 0, hover: -1, flash: -1 };
+  { const o = document.createElement("option"); o.value = -1; o.textContent = "None: images only (no reader)"; $("reader").appendChild(o); }
+  RD.forEach((r, i) => {
+    const o = document.createElement("option"); o.value = i;
+    o.textContent = `${r.label}${r.id !== undefined ? " (" + r.id + ")" : ""} · axis 1 = ${r.coords[0] >= 0 ? "+" : ""}${r.coords[0].toFixed(2)}`
+                    + (r.dprime != null ? ` · d′ ${r.dprime.toFixed(2)}` : "");
+    $("reader").appendChild(o);
+  });
+  for (const sel of ["axisSel", "axX", "axY", "stripAxis"])
+    for (let k = 0; k < meta.K; k++) { const o = document.createElement("option"); o.value = k; o.textContent = (sel === "stripAxis" ? "Axis " : "") + (k + 1); $(sel).appendChild(o); }
+  $("axY").value = 1;
+  const LX = new Float32Array(NI), LY = new Float32Array(NI);
+  function layoutPositions() {
+    if (S.layout === "tsne") { for (let i = 0; i < NI; i++) { LX[i] = IM.x[i]; LY[i] = IM.y[i]; } return; }
+    const sx = axisScale[S.axX] * 1.15, sy = axisScale[S.axY] * 1.15;      // ~98th percentile maps near the edge
+    for (let i = 0; i < NI; i++) {
+      LX[i] = clamp01(0.5 + IM.axes[i][S.axX] / (2 * sx));
+      LY[i] = clamp01(0.5 - IM.axes[i][S.axY] / (2 * sy));                   // + is up
+    }
+  }
+  layoutPositions();
+  const readerScale = [];
+  for (let k = 0; k < meta.K; k++) {
+    const a = RD.map(r => Math.abs(r.coords[k])).sort((x, y) => x - y);
+    readerScale.push((a[Math.floor(a.length * 0.98)] || 1) * 1.15);
+  }
+  const metricRange = m => { const v = RD.map(r => r[m]).filter(x => x != null && !Number.isNaN(x)); return [Math.min(...v), Math.max(...v)]; };
+  const readerLayer = () => S.layout === "axes" && S.showReaders;
+  const rBase = r => [OX + clamp01(0.5 + RD[r].coords[S.axX] / (2 * readerScale[S.axX])) * M,
+                      OY + clamp01(0.5 - RD[r].coords[S.axY] / (2 * readerScale[S.axY])) * M];
+  const rScr = r => { const [x, y] = rBase(r); return [x * S.zoom + S.panX, y * S.zoom + S.panY]; };
+  function readerColour(r) {
+    const v = RD[r][S.rMetric], [lo, hi] = metricRange(S.rMetric);
+    return v == null ? "#999" : SEQ[Math.round(clamp01((v - lo) / ((hi - lo) || 1)) * 255)];
+  }
+  $("showReaders").onchange = e => {
+    S.showReaders = e.target.checked;
+    if (S.showReaders && S.layout !== "axes") { S.layout = "axes"; document.querySelector("input[value=axes]").checked = true; layoutPositions(); resetView(); }
+    legend(); draw();
+  };
+  $("readerMetric").onchange = e => { S.rMetric = e.target.value; if (!S.showReaders) { $("showReaders").checked = true; $("showReaders").onchange({ target: { checked: true } }); } else { legend(); draw(); } };
+  const resetView = () => { S.zoom = 1; S.panX = 0; S.panY = 0; S.flash = -1; S.hover = -1; $("tip").style.display = "none"; };
+  document.querySelectorAll("input[name=layout]").forEach(el => el.onchange = e => { S.layout = e.target.value; layoutPositions(); resetView(); legend(); draw(); });
+  $("axX").onchange = e => { S.axX = +e.target.value; S.layout = "axes"; document.querySelector("input[value=axes]").checked = true; layoutPositions(); resetView(); draw(); };
+  $("axY").onchange = e => { S.axY = +e.target.value; S.layout = "axes"; document.querySelector("input[value=axes]").checked = true; layoutPositions(); resetView(); draw(); };
+  const setReader = i => {
+    const wasNone = S.reader < 0;
+    S.reader = i < 0 ? -1 : (i + NR) % NR;
+    if (wasNone && S.reader >= 0 && S.mode === "gt") { S.mode = "pred"; document.querySelector("input[value=pred]").checked = true; }
+    if (S.reader < 0 && (S.mode === "pred" || S.mode === "diff")) { S.mode = "gt"; document.querySelector("input[value=gt]").checked = true; }
+    $("reader").value = S.reader; update();
+  };
+  $("reader").onchange = e => setReader(+e.target.value);
+  $("prev").onclick = () => setReader(S.reader < 0 ? NR - 1 : S.reader - 1);
+  $("next").onclick = () => setReader(S.reader < 0 ? 0 : S.reader + 1);
+  $("rand").onclick = () => setReader(Math.floor(Math.random() * NR));
+  document.querySelectorAll("input[name=mode]").forEach(el => el.onchange = e => { S.mode = e.target.value; update(); });
+  $("axisSel").onchange = e => { S.axis = +e.target.value; document.querySelector("input[value=axis]").checked = true; S.mode = "axis"; update(); };
+  $("overlay").onchange = e => { S.overlay = e.target.checked; update(); };
+  $("onlySeen").onchange = e => { S.onlySeen = e.target.checked; update(); };
+  $("size").oninput = e => { S.size = +e.target.value; draw(); };
+  const idIndex = new Map(IM.id.map((s, i) => [s, i]));
+  function focusImage(i) {
+    S.zoom = 4; const [bx, by] = base(i); S.panX = W / 2 - bx * S.zoom; S.panY = (stripOpen ? (H - 178) : H) / 2 - by * S.zoom;
+    S.flash = i; S.hover = i; draw(); showTip(i, W / 2, (stripOpen ? (H - 178) : H) / 2);
+  }
+  function findImage() {
+    const q = $("find").value.trim().replace(/\.(jpg|jpeg|png)$/i, "");
+    const i = idIndex.get(q);
+    if (i === undefined) { $("find").style.borderColor = "#d62728"; return; }
+    $("find").style.borderColor = ""; focusImage(i);
+  }
+  $("findBtn").onclick = findImage; $("find").onkeydown = e => { if (e.key === "Enter") findImage(); };
+
+  // ---------- canvas & coordinates ----------
+  const cv = $("plot"), ctx = cv.getContext("2d");
+  let W = 0, H = 0, M = 0, OX = 0, OY = 0, DPR = 1;
+  function resize() {
+    DPR = window.devicePixelRatio || 1; W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    M = Math.min(W, H) - 60; OX = (W - M) / 2; OY = (H - M) / 2; draw();
+  }
+  const base = i => [OX + LX[i] * M, OY + LY[i] * M];
+  const scr = i => { const [x, y] = base(i); return [x * S.zoom + S.panX, y * S.zoom + S.panY]; };
+  const P = i => S.reader < 0 ? NaN : pred[S.reader * NI + i] / 255;
+  const R = i => S.reader < 0 ? 255 : resp[S.reader * NI + i];           // 255 = not judged / no reader
+
+  function colour(i) {
+    switch (S.mode) {
+      case "pred": return VIR[Math.round(P(i) * 255)];
+      case "diff": return DIV[Math.round(clamp01(0.5 + (P(i) - meanPred[i]) / 0.8) * 255)];
+      case "gt":   return IM.gt[i] === 1 ? C_MEL : IM.gt[i] === 0 ? C_NEV : "#bbb";
+      case "cons": return VIR[Math.round(clamp01(IM.consensus[i]) * 255)];
+      case "axis": return DIV[Math.round(clamp01(0.5 + IM.axes[i][S.axis] / (2 * axisScale[S.axis])) * 255)];
+    }
+  }
+
+  function guides() {
+    if (S.layout !== "axes") return;
+    const cx = (OX + 0.5 * M) * S.zoom + S.panX, cy = (OY + 0.5 * M) * S.zoom + S.panY;
+    const x0 = OX * S.zoom + S.panX, x1 = (OX + M) * S.zoom + S.panX, y0 = OY * S.zoom + S.panY, y1 = (OY + M) * S.zoom + S.panY;
+    ctx.strokeStyle = "#d0d5dd"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(x0, cy); ctx.lineTo(x1, cy); ctx.moveTo(cx, y0); ctx.lineTo(cx, y1); ctx.stroke();
+    ctx.fillStyle = "#667085"; ctx.font = "12px -apple-system, Segoe UI, sans-serif";
+    ctx.textAlign = "left"; ctx.fillText(`− axis ${S.axX + 1}`, x0 + 4, cy - 6);
+    ctx.textAlign = "right"; ctx.fillText(`axis ${S.axX + 1} +`, x1 - 4, cy - 6);
+    ctx.textAlign = "left"; ctx.fillText(`axis ${S.axY + 1} +`, cx + 6, y0 + 12); ctx.fillText(`− axis ${S.axY + 1}`, cx + 6, y1 - 4);
+  }
+  function draw() {
+    if (!W) return;
+    ctx.clearRect(0, 0, W, H);
+    guides();
+    const rad = S.size * Math.sqrt(Math.min(S.zoom, 6)) ;
+    const seenList = [];
+    for (let i = 0; i < NI; i++) {
+      const judged = R(i) !== 255;
+      if (S.onlySeen && !judged) continue;
+      if (S.overlay && judged) { seenList.push(i); continue; }
+      const [x, y] = scr(i);
+      if (x < -10 || y < -10 || x > W + 10 || y > H + 10) continue;
+      ctx.fillStyle = colour(i); ctx.globalAlpha = readerLayer() ? 0.3 : S.overlay ? 0.55 : 0.9;
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    for (const i of seenList) {                       // judged images on top, with a ring for the actual answer
+      const [x, y] = scr(i);
+      if (x < -10 || y < -10 || x > W + 10 || y > H + 10) continue;
+      const saidMel = R(i) / 254 >= 0.5;
+      ctx.fillStyle = colour(i); ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, rad + 2.2, 0, 6.2832);
+      ctx.lineWidth = 4.2; ctx.strokeStyle = "#fff"; ctx.stroke();
+      ctx.lineWidth = 2.0; ctx.strokeStyle = saidMel ? "#d7191c" : "#1f5fd6"; ctx.stroke();
+    }
+    for (const i of [S.hover, S.flash]) {
+      if (i < 0) continue;
+      const [x, y] = scr(i);
+      ctx.lineWidth = 2; ctx.strokeStyle = "#2f5bea"; ctx.beginPath(); ctx.arc(x, y, rad + 5, 0, 6.2832); ctx.stroke();
+    }
+    if (readerLayer()) {
+      const ord = RD.map((_, r) => r).sort((a, b) => (a === S.reader) - (b === S.reader));   // selected reader on top
+      for (const r of ord) {
+        const [x, y] = rScr(r), big = r === S.reader || r === S.hoverReader, d = big ? 9 : 6.5;
+        ctx.beginPath(); ctx.moveTo(x, y - d); ctx.lineTo(x + d, y); ctx.lineTo(x, y + d); ctx.lineTo(x - d, y); ctx.closePath();
+        ctx.fillStyle = readerColour(r); ctx.fill();
+        ctx.lineWidth = big ? 2.4 : 1; ctx.strokeStyle = big ? "#000" : "#333"; ctx.stroke();
+      }
+    }
+  }
+
+  function legend() {
+    const lc = $("legBar").getContext("2d"), bw = $("legBar").width, bh = $("legBar").height;
+    let title, lo, hi, map = VIR;
+    if (S.mode === "pred") { title = `Predicted P(${RD[S.reader].label} says melanoma)`; lo = "0 · nevus"; hi = "melanoma · 1"; }
+    if (S.mode === "diff") { title = `${RD[S.reader].label} minus the average reader`; lo = "−0.4 (less likely)"; hi = "+0.4 (more likely)"; map = DIV; }
+    if (S.mode === "cons") { title = "Share of readers saying melanoma"; lo = "0%"; hi = "100%"; }
+    if (S.mode === "axis") { title = `Image score on axis ${S.axis + 1}`; lo = "−"; hi = "+"; map = DIV; }
+    if (S.mode === "gt") {
+      lc.clearRect(0, 0, bw, bh); lc.fillStyle = C_NEV; lc.fillRect(0, 0, bw / 2, bh); lc.fillStyle = C_MEL; lc.fillRect(bw / 2, 0, bw / 2, bh);
+      title = "True diagnosis"; lo = "nevus"; hi = "melanoma";
+    } else for (let x = 0; x < bw; x++) { lc.fillStyle = map[Math.round(x / (bw - 1) * 255)]; lc.fillRect(x, 0, 1, bh); }
+    $("legTitle").textContent = title; $("legLo").textContent = lo; $("legHi").textContent = hi;
+    $("legOv").style.display = S.overlay ? "flex" : "none";
+    $("legR").style.display = readerLayer() ? "block" : "none";
+    if (readerLayer()) {
+      const names = { dprime: "d′", criterion: "criterion", hit_rate: "hit rate", fa_rate: "false-alarm rate" };
+      const [lo, hi] = metricRange(S.rMetric), rc = $("legRBar").getContext("2d"), w = $("legRBar").width, h = $("legRBar").height;
+      for (let x = 0; x < w; x++) { rc.fillStyle = SEQ[Math.round(x / (w - 1) * 255)]; rc.fillRect(x, 0, 1, h); }
+      $("legRTitle").textContent = `Readers (◆) colored by ${names[S.rMetric]}`;
+      $("legRLo").textContent = lo.toFixed(2); $("legRHi").textContent = hi.toFixed(2);
+    }
+  }
+
+  function stats() {
+    $("statsHead").textContent = S.reader < 0 ? "Images" : "This reader";
+    if (S.reader < 0) {
+      const nm = IM.gt.filter(g => g === 1).length;
+      $("stats").innerHTML = [["Images", NI.toLocaleString()], ["Melanoma / nevus", `${nm.toLocaleString()} / ${(NI - nm).toLocaleString()}`],
+        ["Readers", NR], ["Map built from", `${meta.K} template axes`]].map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join("");
+      $("modelNote").textContent = "No reader selected: the map shows the images only. Choose a reader to see their predicted and actual responses.";
+      return;
+    }
+    const r = RD[S.reader], f = (v, d = 2) => v == null || Number.isNaN(v) ? "–" : v.toFixed(d);
+    const rows = [
+      ["Reader", r.label + (r.id !== undefined ? ` (ID ${r.id})` : "")],
+      ["Images judged", r.n.toLocaleString()],
+      ["d′ / criterion", `${f(r.dprime)} / ${f(r.criterion)}`],
+      ["Hit / false-alarm rate", `${f(r.hit_rate)} / ${f(r.fa_rate)}`],
+      ["Axes 1–3 position", r.coords.slice(0, 3).map(v => (v >= 0 ? "+" : "") + v.toFixed(2)).join("  ")],
+      ["Fit AUC: shared only", f(r.auc_shared_only, 3)],
+      ["Fit AUC: + individual", f(r.auc_with_individual, 3)],
+      ["Prediction matches answer", (r.agreement * 100).toFixed(1) + "%"]];
+    $("stats").innerHTML = rows.map(([a, b]) => `<div>${a}</div><div>${b}</div>`).join("");
+    $("modelNote").textContent = `Prediction = what readers in general say about the image + this reader's own ${meta.K}-D
+      individual part (weights ${r.w_shared} and ${r.w_individual}), fit on the images they judged. Descriptive, not held-out.`;
+  }
+
+  function controls() {
+    const none = S.reader < 0;
+    for (const v of ["pred", "diff"]) {
+      const el = document.querySelector(`input[value=${v}]`); el.disabled = none; el.parentElement.style.opacity = none ? .45 : 1;
+    }
+    for (const id of ["overlay", "onlySeen"]) { $(id).disabled = none; $(id).parentElement.style.opacity = none ? .45 : 1; }
+  }
+  function update() { controls(); legend(); stats(); draw(); if (stripOpen) buildStrip(); }
+
+  let stripOpen = false;
+  function buildStrip() {
+    const k = +$("stripAxis").value, mode = $("stripMode").value;
+    const order = Array.from({ length: NI }, (_, i) => i).sort((a, b) => IM.axes[a][k] - IM.axes[b][k]);
+    let pick;
+    if (mode === "ends") pick = order.slice(0, 12).concat([-1], order.slice(-12));
+    else { pick = []; for (let q = 0; q < 24; q++) pick.push(order[Math.round(q / 23 * (NI - 1))]); }
+    $("stripTitle").textContent = `Axis ${k + 1}: lesions from the − end (left) to the + end (right)` +
+      (mode === "ends" ? " · 12 most negative | 12 most positive" : " · evenly spaced") +
+      " · border = true diagnosis (blue nevus, red melanoma)";
+    $("stripBody").innerHTML = pick.map(i => {
+      if (i < 0) return `<div style="flex:0 0 auto;align-self:center;color:#98a2b3;font-size:20px;padding:0 6px">⋯</div>`;
+      const col = IM.gt[i] === 1 ? C_MEL : IM.gt[i] === 0 ? C_NEV : "#ccc";
+      const pic = meta.has_thumbs ? `<img src="thumbs/${IM.id[i]}.jpg" style="border-color:${col}" loading="lazy">`
+                                  : `<div class="ph" style="border-color:${col}"></div>`;
+      const extra = S.reader >= 0 ? `<br>${RD[S.reader].label}: ${(P(i) * 100).toFixed(0)}%` : "";
+      return `<div class="card" data-i="${i}">${pic}${IM.id[i].replace("ISIC_", "")}<br>score ${IM.axes[i][k].toFixed(2)}${extra}</div>`;
+    }).join("");
+    $("stripBody").querySelectorAll(".card").forEach(c => c.onclick = () => focusImage(+c.dataset.i));
+  }
+  const stripShift = () => { $("legend").style.bottom = stripOpen ? "194px" : "16px"; $("hint").style.display = stripOpen ? "none" : ""; };
+  $("stripBtn").onclick = () => { stripOpen = true; $("strip").style.display = "flex"; stripShift(); buildStrip(); };
+  $("stripClose").onclick = () => { stripOpen = false; $("strip").style.display = "none"; stripShift(); };
+  $("stripAxis").onchange = () => { if (stripOpen) buildStrip(); };
+  $("stripMode").onchange = () => { if (stripOpen) buildStrip(); };
+
+  // ---------- hover, zoom, pan ----------
+  const tip = $("tip");
+  function nearest(mx, my) {
+    let best = -1, bd = 81;
+    for (let i = 0; i < NI; i++) {
+      if (S.onlySeen && R(i) === 255) continue;
+      const [x, y] = scr(i), d = (x - mx) ** 2 + (y - my) ** 2;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+  function showTip(i, mx, my) {
+    if (i < 0) { tip.style.display = "none"; return; }
+    const r = R(i), seen = r !== 255, gt = IM.gt[i] === 1 ? "melanoma" : IM.gt[i] === 0 ? "nevus" : "–";
+    const lab = S.reader >= 0 ? RD[S.reader].label : "";
+    const readerLines = S.reader < 0 ? "" :
+      `${lab} predicted: <b>${(P(i) * 100).toFixed(0)}%</b> (average reader ${(meanPred[i] * 100).toFixed(0)}%)<br>
+       ${lab} actually: ${seen ? `<b>${r / 254 >= 0.5 ? "melanoma" : "nevus"}</b>${r !== 0 && r !== 254 ? ` (${(r / 254 * 100).toFixed(0)}% of views)` : ""}` : "not judged"}<br>`;
+    tip.innerHTML = (meta.has_thumbs ? `<img src="thumbs/${IM.id[i]}.jpg" onerror="this.remove()">` : "") +
+      `<b>${IM.id[i]}</b>${IM.lesion && IM.lesion[i] && IM.lesion[i] !== IM.id[i] ? `<br><span style="color:#667085">lesion ${IM.lesion[i]}</span>` : ""}<br>
+       True diagnosis: <b>${gt}</b><br>
+       Readers saying melanoma: ${(IM.consensus[i] * 100).toFixed(0)}% of ${IM.n_readers[i]}<br>
+       ${readerLines}
+       <span style="color:#667085">Axis 1 score ${IM.axes[i][0].toFixed(2)}</span>`;
+    tip.style.display = "block";
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = (mx + 16 + tw > W ? mx - tw - 16 : mx + 16) + "px";
+    tip.style.top = Math.max(8, Math.min(H - th - 8, my - th / 2)) + "px";
+  }
+  let drag = null;
+  function nearestReader(mx, my) {
+    if (!readerLayer()) return -1;
+    let best = -1, bd = 121;
+    RD.forEach((_, r) => { const [x, y] = rScr(r), d = (x - mx) ** 2 + (y - my) ** 2; if (d < bd) { bd = d; best = r; } });
+    return best;
+  }
+  function showReaderTip(r, mx, my) {
+    const d = RD[r], f = (v, k = 2) => v == null ? "–" : v.toFixed(k);
+    tip.innerHTML = `<b>${d.label}${d.id !== undefined ? " (" + d.id + ")" : ""}</b> · reader<br>
+      d′ ${f(d.dprime)} · criterion ${f(d.criterion)}<br>hit ${f(d.hit_rate)} · false alarm ${f(d.fa_rate)}<br>
+      Axis ${S.axX + 1}: ${d.coords[S.axX] >= 0 ? "+" : ""}${d.coords[S.axX].toFixed(2)} ·
+      axis ${S.axY + 1}: ${d.coords[S.axY] >= 0 ? "+" : ""}${d.coords[S.axY].toFixed(2)}<br>
+      ${d.n.toLocaleString()} images judged<br><span style="color:#667085">Click to select this reader</span>`;
+    tip.style.display = "block";
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    tip.style.left = (mx + 16 + tw > W ? mx - tw - 16 : mx + 16) + "px";
+    tip.style.top = Math.max(8, Math.min(H - th - 8, my - th / 2)) + "px";
+  }
+  let downAt = null;
+  cv.addEventListener("click", e => {
+    if (downAt && Math.hypot(e.offsetX - downAt[0], e.offsetY - downAt[1]) > 4) return;   // it was a drag
+    const r = nearestReader(e.offsetX, e.offsetY);
+    if (r >= 0) setReader(r);
+  });
+  cv.addEventListener("mousedown", e => { downAt = [e.offsetX, e.offsetY]; drag = { x: e.offsetX, y: e.offsetY, px: S.panX, py: S.panY }; });
+  window.addEventListener("mouseup", () => { drag = null; });
+  cv.addEventListener("mousemove", e => {
+    if (drag) { S.panX = drag.px + e.offsetX - drag.x; S.panY = drag.py + e.offsetY - drag.y; tip.style.display = "none"; draw(); return; }
+    const r = nearestReader(e.offsetX, e.offsetY);
+    if (r !== S.hoverReader) { S.hoverReader = r; draw(); }
+    if (r >= 0) { if (S.hover >= 0) { S.hover = -1; draw(); } cv.style.cursor = "pointer"; showReaderTip(r, e.offsetX, e.offsetY); return; }
+    cv.style.cursor = "crosshair";
+    const i = nearest(e.offsetX, e.offsetY);
+    if (i !== S.hover) { S.hover = i; S.flash = -1; draw(); }
+    showTip(i, e.offsetX, e.offsetY);
+  });
+  cv.addEventListener("mouseleave", () => { S.hover = -1; S.hoverReader = -1; tip.style.display = "none"; draw(); });
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    const f = Math.exp(-e.deltaY * 0.0015), z = Math.max(0.5, Math.min(40, S.zoom * f)), k = z / S.zoom;
+    S.panX = e.offsetX - (e.offsetX - S.panX) * k; S.panY = e.offsetY - (e.offsetY - S.panY) * k; S.zoom = z; draw();
+  }, { passive: false });
+  cv.addEventListener("dblclick", () => { S.zoom = 1; S.panX = 0; S.panY = 0; S.flash = -1; draw(); });
+  window.addEventListener("resize", resize);
+  resize(); update();
+})().catch(err => {
+  document.getElementById("loading").textContent =
+    "Could not load data/ (" + err + "). If you opened index.html directly from your disk, serve the folder instead: " +
+    "python -m http.server 8000, then open http://localhost:8000";
+});
+</script>
+</body>
+</html>
